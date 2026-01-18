@@ -34,18 +34,32 @@ def download_image(url):
         return None
     return None
 
-def cache_pinterest_images(dataset_path, max_samples=100):
-    """Downloads images and creates a clean folder structure."""
-    dataset_path = Path(dataset_path)
-    cache_dir = dataset_path / "cached_images"
-    scenes_dir = cache_dir / "scenes"
-    products_dir = cache_dir / "products"
+def cache_pinterest_images(json_folder, target_cache_dir, max_samples=100):
+    """
+    json_folder: The long path from kagglehub where fashion.json is.
+    target_cache_dir: The short path where you want images stored.
+    """
+    json_folder = Path(json_folder)
+    cache_root = Path(target_cache_dir)
+    
+    scenes_dir = cache_root / "scenes"
+    products_dir = cache_root / "products"
     
     scenes_dir.mkdir(parents=True, exist_ok=True)
     products_dir.mkdir(parents=True, exist_ok=True)
 
-    ann_path = dataset_path / "fashion.json" # Change to 'home.json' if needed
+    # Note: Kaggle datasets sometimes put the JSON in a subfolder
+    ann_path = json_folder / "fashion.json"
+    if not ann_path.exists():
+        # Fallback search if JSON is nested
+        potential_paths = list(json_folder.rglob("fashion.json"))
+        if potential_paths:
+            ann_path = potential_paths[0]
+        else:
+            raise FileNotFoundError(f"Could not find fashion.json in {json_folder}")
+
     count = 0
+    logger.info(f"Starting download to short path: {cache_root.absolute()}")
     
     with open(ann_path, "r") as f:
         for line in f:
@@ -56,7 +70,6 @@ def cache_pinterest_images(dataset_path, max_samples=100):
             s_path = scenes_dir / f"{s_sig}.jpg"
             p_path = products_dir / f"{p_sig}.jpg"
             
-            # Only download if not already present
             if not s_path.exists():
                 img = download_image(signature_to_url(s_sig))
                 if img: img.save(s_path)
@@ -67,9 +80,9 @@ def cache_pinterest_images(dataset_path, max_samples=100):
                 
             if s_path.exists() and p_path.exists():
                 count += 1
-                if count % 10 == 0: logger.info(f"Downloaded {count} pairs...")
+                if count % 10 == 0: logger.info(f"Cached {count} pairs...")
 
-    return cache_dir
+    return cache_root
 
 # ===============================
 # 2. Dataset & Model
@@ -79,11 +92,7 @@ class ShopTheLookDataset(Dataset):
     def __init__(self, cache_root, transform=None):
         self.root = Path(cache_root)
         self.transform = transform
-        
-        # We index what we actually have on disk
         self.scenes = list((self.root / "scenes").glob("*.jpg"))
-        # Map scene ID to its product (simplified for this dataset structure)
-        # Note: In production, you'd use the JSON to map multiple products
         self.all_products = list((self.root / "products").glob("*.jpg"))
 
     def __len__(self):
@@ -91,19 +100,17 @@ class ShopTheLookDataset(Dataset):
 
     def __getitem__(self, idx):
         s_path = self.scenes[idx]
-        # In this dataset, names match the signatures
-        s_id = s_path.stem 
-        
-        # Load Scene
         scene_img = Image.open(s_path).convert("RGB")
         
-        # For simplicity, we assume the product with same index or similar logic
-        # Ideally, use a lookup table from your JSON
+        # Simple random sampling for pos/neg for demonstration
         pos_img = Image.open(random.choice(self.all_products)).convert("RGB") 
         neg_img = Image.open(random.choice(self.all_products)).convert("RGB")
 
         if self.transform:
-            scene_img, pos_img, neg_img = self.transform(scene_img), self.transform(pos_img), self.transform(neg_img)
+            scene_img = self.transform(scene_img)
+            pos_img = self.transform(pos_img)
+            neg_img = self.transform(neg_img)
+            
         return scene_img, pos_img, neg_img
 
 class CompleteTheLook(nn.Module):
@@ -116,7 +123,6 @@ class CompleteTheLook(nn.Module):
     def forward(self, scene, product):
         s_feat = self.fc(self.encoder(scene).flatten(1))
         p_feat = self.fc(self.encoder(product).flatten(1))
-        # Returns dot product similarity
         return torch.sum(s_feat * p_feat, dim=1)
 
 # ===============================
@@ -124,33 +130,41 @@ class CompleteTheLook(nn.Module):
 # ===============================
 
 def main():
-    # 1. Dynamically find the Kaggle dataset path
+    # 1. Download/Find dataset via kagglehub
     try:
         import kagglehub
-        # This returns the actual path on your machine (e.g., C:\Users\yumai\.cache\...)
-        DATASET_PATH = kagglehub.dataset_download("pypiahmad/shop-the-look-dataset")
-        logger.info(f"Dataset found at: {DATASET_PATH}")
+        KAGGLE_PATH = kagglehub.dataset_download("pypiahmad/shop-the-look-dataset")
     except Exception as e:
-        logger.error("Could not download/find dataset via kagglehub.")
+        logger.error(f"Kagglehub error: {e}")
         return
 
-    # 2. Scrape (This will now create /cached_images inside the kagglehub folder)
-    # Note: If fashion.json is inside a subfolder like 'fashion', 
-    # you might need: Path(DATASET_PATH) / "fashion"
-    cache_dir = cache_pinterest_images(DATASET_PATH, max_samples=100)
+    # 2. DEFINE SHORT PATH HERE
+    # This creates a folder named 'data_cache' in your current project folder
+    SHORT_CACHE_PATH = "./data_cache" 
     
-    # 2. Setup
+    # 3. Scrape and Cache
+    cache_dir = cache_pinterest_images(KAGGLE_PATH, SHORT_CACHE_PATH, max_samples=100)
+    
+    # 4. Training Setup
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    transform = T.Compose([T.Resize((224, 224)), T.ToTensor(), T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+    transform = T.Compose([
+        T.Resize((224, 224)), 
+        T.ToTensor(), 
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
     
     dataset = ShopTheLookDataset(cache_dir, transform)
+    if len(dataset) == 0:
+        logger.error("No images found in cache. Check internet connection or JSON path.")
+        return
+
     loader = DataLoader(dataset, batch_size=8, shuffle=True)
     
     model = CompleteTheLook().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     margin = 0.2
 
-    # 3. Loop
+    # 5. Training Loop
     for epoch in range(10):
         model.train()
         epoch_loss = 0
@@ -160,7 +174,6 @@ def main():
             pos_score = model(scene, pos)
             neg_score = model(scene, neg)
             
-            # Ranking Loss calculation
             loss = torch.mean(torch.clamp(margin - pos_score + neg_score, min=0))
             
             optimizer.zero_grad()
@@ -170,10 +183,10 @@ def main():
             
         print(f"Epoch {epoch+1} | Loss: {epoch_loss/len(loader):.4f}")
     
-    # Save the trained weights
+    # 6. Save Weights
     model_path = "fashion_recommender_v1.pth"
     torch.save(model.state_dict(), model_path)
-    print(f"Model saved successfully to {model_path}")
+    print(f"Model saved to {model_path}")
 
 if __name__ == "__main__":
     main()
