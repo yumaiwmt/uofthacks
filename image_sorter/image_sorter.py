@@ -136,9 +136,24 @@ def interactive_sort(source, keep, discard, logfile, open_images=True):
     print("All images processed.")
 
 
+def sort_image(image_path: str, decision: str, keep_dir: str, discard_dir: str, log_path: str):
+    """Sort a single image based on decision ('yes' for keep, 'no' for discard)."""
+    img = Path(image_path)
+    if decision == 'yes':
+        dst = move_file(img, Path(keep_dir))
+        append_log(Path(log_path), img.name, "keep")
+        print(f"Kept: {dst}")
+    elif decision == 'no':
+        dst = move_file(img, Path(discard_dir))
+        append_log(Path(log_path), img.name, "discard")
+        print(f"Discarded: {dst}")
+    else:
+        raise ValueError("Decision must be 'yes' or 'no'")
+
+
 def main():
     # Hardcode the source directory here (change this path as needed)
-    source = "C:/Users/eliss/UofTHacks/uofthacks/testing images"  # Example path
+    source = "C:/Users/eliss/UofTHacks/uofthacks/SecondSkin frontend/src/testing images"  # Example path
     # Keep the rest of the options if you want them
     parser = argparse.ArgumentParser(description="Interactive image sorter: move images to keep or discard folders.")
     parser.add_argument("--keep", default="keep", help="Directory to move kept images into (default: keep)")
@@ -160,3 +175,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

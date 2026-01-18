@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence } from 'framer-motion';
 import { SwipeCard } from './SwipeCard';
 import { ArrowLeft, Heart, X, Sparkles } from 'lucide-react';
 
